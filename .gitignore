@@ -24,6 +24,6 @@ dist/
 .idea/
 
 # Local data
-*.sqlite
+##*.sqlite
 *.db
 .env

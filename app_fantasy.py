@@ -83,11 +83,11 @@ st.markdown(
       <li>Stats from <b>{season_info}</b> (pull last completed season)</li>
       <li>Standard fantasy categories (per-game)</li>
       <li>Z-scores normalize stats for better comparisons</li>
-      <li>Games played gets a boost (more games = more fantasy goodness)</li>
-      <li>Turnovers are punished because… they just are 🫠</li>
+      <li>Games played gets a boost (we want players that actually play games!)</li>
+      <li>Turnovers are punished because… they're evil! 🫠</li>
     </ul>
 
-    <p style="font-size: 14px; color: #555;"><b>Note:</b> Some rookies or late-signed vets won’t show up yet.</p>
+    <p style="font-size: 14px; color: #555;"><b>Note:</b> rookies won’t show up (they don't have data from last season!).</p>
     </div>
     """,
     unsafe_allow_html=True

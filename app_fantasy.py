@@ -1,63 +1,91 @@
-# app_fantasy.py — Fantasy Draft Buddy (with themed sidebar and a striped table look)
+# app_fantasy.py — My Personal Fantasy Draft Helper
 
+import os
 import sqlite3
 import pandas as pd
 import streamlit as st
-from unidecode import unidecode
+from unidecode import unidecode  # for cleaning names (accents mess up searching)
 
-DB_PATH = "nba.sqlite"  # might make this configurable later
+# Keeping it relative so it'll work on Streamlit Cloud too
+DB_PATH = "nba.sqlite"
 
-# ---------------- App Setup ----------------
+# --- Streamlit setup ---
 st.set_page_config(page_title="Court Vision (Fantasy Draft Hero)", layout="wide")
 st.title("Court Vision — My Fantasy Draft Buddy")
+
 st.markdown(
     "<p style='font-size:18px; color:gray;'>Live Fantasy Draft Helper – Ranked Player Recommendations</p>",
     unsafe_allow_html=True
 )
 
-# ---------------- Data Fetching ----------------
-
+# --- Load rankings from the local SQLite DB ---
 @st.cache_data
-def get_fantasy_rankings():
-    # Could move this logic to a separate module if it gets bigger
-    connection = sqlite3.connect(DB_PATH)
+def load_player_rankings(db_file: str):
+    if not os.path.exists(db_file):
+        st.error(f"Can't find DB at '{db_file}'. Did you forget to add it?")
+        return pd.DataFrame()
+
     try:
-        df = pd.read_sql("SELECT * FROM fantasy_rankings", connection)
+        conn = sqlite3.connect(db_file)
+        df = pd.read_sql("SELECT * FROM fantasy_rankings", conn)
+    except Exception as err:
+        st.error(f"Ugh... failed to read from the database: {err}")
+        return pd.DataFrame()
     finally:
-        connection.close()
+        try:
+            conn.close()
+        except:
+            pass  # meh, already done
 
-    # normalize names (for easier matching/searching)
-    df["display_name"] = df["full_name"].apply(lambda name: unidecode(name or ""))
+    # Sometimes the columns are missing? Just pad them.
+    for col in ["full_name", "position"]:
+        if col not in df.columns:
+            df[col] = ""
 
-    # ensure numeric data is actually numeric
-    force_numeric = ["score", "pts", "reb", "ast", "stl", "blk", "fg3m", "fg_pct", "ft_pct", "tov", "games", "mp", "rank"]
-    for stat in force_numeric:
+    # Add a cleaned-up version of the name for easier filtering/searching
+    df["display_name"] = df["full_name"].fillna("").apply(unidecode)
+
+    # Coerce numeric stats into real numbers (SQLite is weird about types)
+    stat_cols = [
+        "score", "pts", "reb", "ast", "stl", "blk", "fg3m",
+        "fg_pct", "ft_pct", "tov", "games", "mp", "rank"
+    ]
+    for stat in stat_cols:
         if stat in df.columns:
-            df[stat] = pd.to_numeric(df[stat], errors="coerce")  # might still get NaNs here
+            df[stat] = pd.to_numeric(df[stat], errors="coerce")
 
+    # Highest score = better, so descending sort
     if "score" in df.columns:
-        df = df.sort_values("score", ascending=False)  # best players first
+        df = df.sort_values("score", ascending=False)
+
     return df.reset_index(drop=True)
 
 
 @st.cache_data
-def guess_season_label():
-    # Just trying to figure out which seasons we’re pulling from
+def find_season_info(db_file: str):
+    if not os.path.exists(db_file):
+        return "Unknown"
+
     try:
-        conn = sqlite3.connect(DB_PATH)
-        all_seasons = pd.read_sql("SELECT DISTINCT season FROM stats", conn)["season"]
+        conn = sqlite3.connect(db_file)
+        seasons = pd.read_sql("SELECT DISTINCT season FROM stats", conn)
         conn.close()
-        valid_seasons = all_seasons.dropna().unique().tolist()
-        if valid_seasons:
-            return " / ".join(sorted(valid_seasons))
-    except Exception:
-        pass  # shrug
-    return "Unknown"
+        season_vals = seasons["season"].dropna().unique().tolist()
+        return " / ".join(sorted(map(str, season_vals))) if season_vals else "Unknown"
+    except:
+        return "Unknown"
 
-df = get_fantasy_rankings()
-season_info = guess_season_label()
 
-# ---------------- Intro Card ----------------
+# --- Data load ---
+rankings_df = load_player_rankings(DB_PATH)
+season_label = find_season_info(DB_PATH)
+
+# Bail early so the page doesn't render half-broken
+if rankings_df.empty:
+    st.stop()
+
+
+# --- Intro Card ---
 st.markdown(
     f"""
     <div style="
@@ -71,29 +99,28 @@ st.markdown(
         box-shadow: 0px 2px 6px rgba(0,0,0,0.05);
     ">
     <h3 style="margin-top:0; color:#007acc;">📊 Why I built this</h3>
-    <p style="color:#003366;">I <em>suck</em> at fantasy drafts, picking bum players way too high.<br>
-    This tool was created so nobody has to feel my pain.</p>
+    <p style="color:#003366;">I'm trash at fantasy drafts. Always reach for guys who underperform.<br>
+    This tool keeps me from panicking during live picks.</p>
 
     <h3 style="color:#007acc;">⚙️ What it does</h3>
-    <p style="color:#003366;">Filter by position, mark off picked guys, and see who's best left.<br>
-    No more scrambling when someone takes your pick.</p>
+    <p style="color:#003366;">Lets you filter by position, track picked players, and sort by rankings.</p>
 
-    <h3 style="color:#007acc;">📐 How it ranks players</h3>
+    <h3 style="color:#007acc;">📐 How rankings are calculated</h3>
     <ul style="color:#003366;">
-      <li>Stats from <b>{season_info}</b> (pull last completed season)</li>
-      <li>Standard fantasy categories (per-game)</li>
-      <li>Z-scores normalize stats for better comparisons</li>
-      <li>Games played gets a boost (we want players that actually play games!)</li>
-      <li>Turnovers are punished because… they're evil! 🫠</li>
+      <li>Data from: <b>{season_label}</b> (should be most recent full season)</li>
+      <li>Standard fantasy stats (per-game basis)</li>
+      <li>Z-scores for better cross-category balance</li>
+      <li>Bonus for games played (availability matters!)</li>
+      <li>Turnovers = bad (just... don't draft Westbrook 😅)</li>
     </ul>
 
-    <p style="font-size: 14px; color: #555;"><b>Note:</b> rookies won’t show up (they don't have data from last season!).</p>
+    <p style="font-size: 14px; color: #555;"><b>Heads-up:</b> Rookies won't appear since there's no past data for them.</p>
     </div>
     """,
     unsafe_allow_html=True
 )
 
-# ---------------- Sidebar Stuff ----------------
+# --- Sidebar ---
 st.sidebar.markdown(
     """
     <div style="
@@ -106,104 +133,100 @@ st.sidebar.markdown(
     ">
     <h4 style="margin:0; color:#007acc;">Draft Settings</h4>
     <p style="margin:6px 0 0 0; color:#003366; font-size:14px;">
-      Narrow by position, mark picks, and adjust how many names you want to see.
+      Filter by position, mark off who’s gone, and limit how many players to show.
     </p>
     </div>
     """,
     unsafe_allow_html=True
 )
 
-# Filter controls
-pos_filter = st.sidebar.selectbox("Filter by position", ["All", "Guard", "Forward", "Center"])
+pos_choice = st.sidebar.selectbox("Filter by position", ["All", "Guard", "Forward", "Center"])
+table_type = st.sidebar.radio("View mode", ["Interactive grid", "Styled (static)"])
 
-# Build accent-insensitive mapping
-all_names = df["display_name"].unique().tolist()
-picked_display = st.sidebar.multiselect("Already Picked (searchable)", all_names)
+# Player picker – use cleaned names to search easily
+searchable_names = rankings_df["display_name"].dropna().unique().tolist()
+already_picked = st.sidebar.multiselect("Already Picked (search)", searchable_names)
 
-# Reverse map to real names
-name_map = {unidecode(n): n for n in df["full_name"].dropna().unique()}
-picked_real_names = {name_map.get(n, n) for n in picked_display}
+# Map back to actual names (for filtering)
+name_map = {unidecode(n): n for n in rankings_df["full_name"].dropna().unique()}
+picked_names = {name_map.get(name, name) for name in already_picked}
 
-# How many to show in the table
-num_to_show = st.sidebar.slider("Show top N players", 10, 200, 50, step=10)
+top_n = st.sidebar.slider("Top N players to show", 10, 200, 50, step=10)
 
-# ---------------- Apply Filters ----------------
-table_data = df.copy()
 
-if pos_filter != "All":
-    # loosely match position strings
-    table_data = table_data[table_data["position"].fillna("").str.contains(pos_filter, case=False)]
+# --- Apply filters ---
+filtered_df = rankings_df.copy()
 
-if picked_real_names:
-    table_data = table_data[~table_data["full_name"].isin(picked_real_names)]
+if pos_choice != "All":
+    filtered_df["position"] = filtered_df["position"].fillna("").astype(str)
+    filtered_df = filtered_df[filtered_df["position"].str.contains(pos_choice, case=False)]
 
-# ---------------- Setup Columns ----------------
+if picked_names:
+    filtered_df = filtered_df[~filtered_df["full_name"].isin(picked_names)]
 
-cols_order = [
-    "rank", "full_name", "position", "score",
-    "games", "mp",
+# --- Reorganize columns ---
+columns_in_order = [
+    "rank", "full_name", "position", "score", "games", "mp",
     "pts", "reb", "ast", "stl", "blk", "fg3m",
     "fg_pct", "ft_pct", "tov"
 ]
 
-# just in case the columns aren't there
-for col in cols_order:
-    if col not in table_data.columns:
-        table_data[col] = None  # probably won't happen but playing it safe
+for col in columns_in_order:
+    if col not in filtered_df.columns:
+        filtered_df[col] = pd.NA  # if it's missing, fill it with blanks
 
-# Rename for display
-final_table = table_data[cols_order].rename(columns={
+renamed_cols = {
     "rank": "Rank", "full_name": "Name", "position": "Position", "score": "Score",
     "games": "GP", "mp": "MP", "pts": "PTS", "reb": "REB", "ast": "AST",
     "stl": "STL", "blk": "BLK", "fg3m": "3PM", "fg_pct": "FG %",
     "ft_pct": "FT %", "tov": "TOV"
-})
-
-# convert MP to float for formatting
-if "MP" in final_table.columns:
-    final_table["MP"] = pd.to_numeric(final_table["MP"], errors="coerce")
-
-# small helper to clean GP
-if "GP" in final_table.columns:
-    final_table["GP"] = pd.to_numeric(final_table["GP"], errors="coerce").fillna(0).astype(int)
-
-# Number formatting per stat
-num_fmt = {
-    "Score": "{:.1f}",
-    "PTS": "{:.0f}", "REB": "{:.0f}", "AST": "{:.0f}",
-    "STL": "{:.1f}", "BLK": "{:.1f}",
-    "3PM": "{:.1f}",
-    "FG %": "{:.0%}", "FT %": "{:.0%}",
-    "TOV": "{:.1f}",
-    "MP": "{:.0f}",
 }
 
-# ---------------- Styling Helpers ----------------
+display_table = filtered_df[columns_in_order].rename(columns=renamed_cols)
 
-def zebra_stripe(row: pd.Series):
-    bg_color = "#f7fbff" if (row.name % 2 == 0) else "#ffffff"
-    return [f"background-color: {bg_color}"] * len(row)
+# Coerce again just in case
+for col in display_table.columns:
+    display_table[col] = pd.to_numeric(display_table[col], errors="ignore")
 
-preview = final_table.head(num_to_show).reset_index(drop=True)
+# Format numbers – some unnecessary overkill here, but it's fine
+num_formatting = {
+    "Score": "{:.1f}", "PTS": "{:.0f}", "REB": "{:.0f}", "AST": "{:.0f}",
+    "STL": "{:.1f}", "BLK": "{:.1f}", "3PM": "{:.1f}",
+    "FG %": "{:.0%}", "FT %": "{:.0%}", "TOV": "{:.1f}", "MP": "{:.0f}"
+}
 
-styled_table = (
-    preview.style
-    .format(num_fmt)
-    .set_table_styles([
-        {"selector": "thead th",
-         "props": [("background-color", "#f0f8ff"), ("color", "#003366"),
-                   ("font-weight", "bold"), ("text-align", "center")]},
-        {"selector": "tbody td",
-         "props": [("text-align", "center")]},
-        {"selector": "table",
-         "props": [("margin-left", "auto"), ("margin-right", "auto")]}
-    ])
-    .apply(zebra_stripe, axis=1)
-)
+top_players = display_table.head(top_n).reset_index(drop=True)
 
-# ---------------- Render Output ----------------
+
+# --- Output table ---
 st.subheader("Best Remaining Players")
-st.dataframe(styled_table, use_container_width=True, hide_index=True)
 
-# NOTE: Might add ability to export results later
-# st.download_button("Export to CSV", ...)
+if top_players.empty:
+    st.warning("Hmm, no data to display. Check filters or if the DB has the right stuff.")
+else:
+    if table_type == "Interactive grid":
+        st.dataframe(top_players, use_container_width=True, hide_index=True)
+    else:
+        # Static styled table (kinda hacky but looks nice)
+        def alt_row_color(row):
+            bg = "#f7fbff" if row.name % 2 == 0 else "#ffffff"
+            return [f"background-color: {bg}"] * len(row)
+
+        styled_df = (
+            top_players.style
+            .format(num_formatting)
+            .set_table_styles([
+                {"selector": "thead th", "props": [("background-color", "#f0f8ff"), ("color", "#003366"),
+                                                   ("font-weight", "bold"), ("text-align", "center")]},
+                {"selector": "tbody td", "props": [("text-align", "center")]},
+                {"selector": "table", "props": [("margin-left", "auto"), ("margin-right", "auto")]}
+            ])
+            .apply(alt_row_color, axis=1)
+        )
+
+        st.markdown(styled_df.to_html(), unsafe_allow_html=True)
+
+# --- Debug dump (expandable) ---
+with st.expander("Debug info"):
+    st.write({"rows": len(top_players), "columns": list(top_players.columns)})
+    st.dataframe(top_players.head(5), use_container_width=True, hide_index=True)

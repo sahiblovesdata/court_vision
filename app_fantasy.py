@@ -182,14 +182,49 @@ for c in ["Rank","Score","GP","MP","PTS","REB","AST","STL","BLK","3PM","FG %","F
 # Slice top N
 top_players = display_table.head(top_n).reset_index(drop=True)
 
-# --- Output ---
+# --- Output table ---
 st.subheader("Best Remaining Players")
-if top_players.empty:
-    st.warning("No data to display. Check filters or database contents.")
-else:
-    st.dataframe(top_players, use_container_width=True, hide_index=True)
 
-# --- Debug info (expandable) ---
-with st.expander("Debug info"):
-    st.write({"rows": len(top_players), "columns": list(top_players.columns)})
-    st.dataframe(top_players.head(5), use_container_width=True, hide_index=True)
+if top_players.empty:
+    st.warning("Hmm, no data to display. Check filters or if the DB has the right stuff.")
+else:
+    # Formatting
+    for pcol in ["FG %", "FT %"]:
+        if pcol in top_players.columns:
+            top_players[pcol] = pd.to_numeric(top_players[pcol], errors="coerce") * 100
+
+    # Ensure numeric types so sorting works correctly
+    numeric_formats = {
+        "Rank":        "%.0f",
+        "Score":       "%.1f",
+        "GP":          "%.0f",
+        "MP":          "%.0f",
+        "PTS":         "%.0f",
+        "REB":         "%.0f",
+        "AST":         "%.0f",
+        "STL":         "%.1f",
+        "BLK":         "%.1f",
+        "3PM":         "%.1f",
+        "FG %":        "%.0f%%",   
+        "FT %":        "%.0f%%",   
+        "TOV":         "%.1f",
+    }
+
+    # Coerce to numeric for all columns we’re formatting
+    for col in numeric_formats.keys():
+        if col in top_players.columns:
+            top_players[col] = pd.to_numeric(top_players[col], errors="coerce")
+
+    # Build Streamlit column config with formats
+    col_config = {}
+    for col, fmt in numeric_formats.items():
+        if col in top_players.columns:
+            col_config[col] = st.column_config.NumberColumn(format=fmt)
+
+    st.dataframe(
+        top_players,
+        use_container_width=True,
+        hide_index=True,
+        column_config=col_config
+    )
+
